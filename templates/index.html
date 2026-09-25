@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>eBay Final Boss Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <h1>eBay Final Boss</h1>
+  <p>Research → Score → Review → Publish → Monitor</p>
+  {% if dry_run %}<div class="warning">DRY RUN is ON — normal products will not be published.</div>{% endif %}
+  <div class="warning">Environment: {{ ebay_env|upper }} — Production Publish is locked in this build.</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. Research</h2>
+    <form method="post" action="/research">
+      <input name="query" placeholder="e.g. car accessories" required>
+      <button>Find opportunities</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>2. Opportunities</h2>
+    <table>
+      <tr><th>Product</th><th>Source</th><th>Sell</th><th>Est. Profit</th><th>Score</th><th>Listing details</th><th>Action</th></tr>
+      {% for p in products %}
+      <tr>
+        <td>{{ p.title }}</td>
+        <td>${{ "%.2f"|format(p.source_price or 0) }}</td>
+        <td>${{ "%.2f"|format(p.sell_price or 0) }}</td>
+        <td>${{ "%.2f"|format(p.estimated_profit or 0) }}</td>
+        <td>{{ p.score }}</td>
+        <td>
+          <form method="post" action="/product/{{ p.sku }}/listing-details" class="details-form">
+            <input name="category_id" value="{{ p.category_id or '' }}" placeholder="Category ID" aria-label="Category ID">
+            <input name="brand" value="{{ p.brand or '' }}" placeholder="Brand" aria-label="Brand">
+            <input name="item_type" value="{{ p.item_type or '' }}" placeholder="Type" aria-label="Type">
+            <button>Save details</button>
+          </form>
+        </td>
+        <td>
+          <button type="button" onclick="suggestCategories('{{ p.sku }}')">Suggest eBay Category</button>
+          <div id="categories-{{ p.sku }}" class="category-suggestions"></div>
+          <button type="button" onclick="loadRequiredAspects('{{ p.sku }}')">Load Required Specifics</button>
+          <div id="aspects-{{ p.sku }}" class="required-aspects"></div>
+          <form method="post" action="/publish/{{ p.sku }}">
+            <button>{% if dry_run %}Validate (Dry Run){% else %}Publishing Locked{% endif %}</button>
+          </form>
+          {% if ebay_env|lower == "sandbox" %}
+          <form method="post" action="/sandbox-publish/{{ p.sku }}" onsubmit="return confirm('Publish this reviewed product to eBay Sandbox only?');">
+            <button type="submit">Publish to Sandbox</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">Run a research search above.</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+
+  <section class="card">
+    <h2>3. Sandbox API Test</h2>
+    <p>This controlled test writes only to eBay Sandbox. It uses the known-good Lenovo docking-station test data, category 3709, and Sandbox image.</p>
+    {% if ebay_env|lower == "sandbox" %}
+    <form method="post" action="/sandbox-api-test" onsubmit="return confirm('Create and publish one controlled test listing in eBay Sandbox?');">
+      <button type="submit">Run Sandbox API Test</button>
+    </form>
+    {% else %}
+    <p><strong>Locked:</strong> EBAY_ENV must be sandbox.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>4. Listings</h2>
+    <table>
+      <tr><th>SKU</th><th>Title</th><th>Price</th><th>Status</th><th>Offer ID</th><th>Listing ID</th><th>Error</th></tr>
+      {% for l in listings %}
+      <tr><td>{{ l.sku }}</td><td>{{ l.title }}</td><td>${{ "%.2f"|format(l.price or 0) }}</td><td>{{ l.status }}</td><td>{{ l.offer_id }}</td><td>{{ l.listing_id }}</td><td>{{ l.error }}</td></tr>
+      {% else %}
+      <tr><td colspan="7">No listings yet.</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>5. API setup</h2>
+    <p>Use <code>/api/policies</code> after OAuth to inspect your eBay business policies.</p>
+  </section>
+</main>
+
+<script>
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+async function suggestCategories(sku) {
+  const box = document.getElementById('categories-' + sku);
+  box.innerHTML = '<p>Asking eBay for category suggestions...</p>';
+
+  try {
+    const res = await fetch('/api/product/' + encodeURIComponent(sku) + '/category-suggestions');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Unable to load category suggestions.');
+
+    if (!data.suggestions || !data.suggestions.length) {
+      box.innerHTML = '<p>No eBay category suggestions returned.</p>';
+      return;
+    }
+
+    box.innerHTML = '';
+
+    const heading = document.createElement('p');
+    const strong = document.createElement('strong');
+    strong.textContent = 'eBay category suggestions';
+    heading.appendChild(strong);
+    box.appendChild(heading);
+
+    const select = document.createElement('select');
+    select.id = 'category-choice-' + sku;
+
+    data.suggestions.forEach(c => {
+      const option = document.createElement('option');
+      option.value = c.category_id;
+      option.textContent = (c.path || c.category_name || c.category_id) + ' [' + c.category_id + ']';
+      if (c.category_id === data.current_category_id) option.selected = true;
+      select.appendChild(option);
+    });
+    box.appendChild(select);
+
+    const useButton = document.createElement('button');
+    useButton.type = 'button';
+    useButton.textContent = 'Use This Category';
+    useButton.addEventListener('click', () => applySuggestedCategory(sku));
+    box.appendChild(document.createTextNode(' '));
+    box.appendChild(useButton);
+
+    const note = document.createElement('p');
+    const small = document.createElement('small');
+    small.textContent = 'Review the category name/path before applying it. Suggestions come from eBay Taxonomy.';
+    note.appendChild(small);
+    box.appendChild(note);
+  } catch (err) {
+    box.innerHTML = '<p class="warning">' + esc(err.message) + '</p>';
+  }
+}
+
+function applySuggestedCategory(sku) {
+  const select = document.getElementById('category-choice-' + sku);
+  if (!select) return;
+
+  const box = document.getElementById('categories-' + sku);
+  const row = box.closest('tr');
+  const categoryInput = row ? row.querySelector('input[name="category_id"]') : null;
+
+  if (!categoryInput) {
+    alert('Could not find the Category ID field.');
+    return;
+  }
+
+  categoryInput.value = select.value;
+  categoryInput.focus();
+  alert('Category ID filled in. Click "Save details", then "Load Required Specifics".');
+}
+
+async function loadRequiredAspects(sku) {
+  const box = document.getElementById('aspects-' + sku);
+  box.innerHTML = '<p>Loading eBay requirements...</p>';
+  try {
+    const res = await fetch('/api/product/' + encodeURIComponent(sku) + '/required-aspects');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Unable to load required aspects.');
+
+    let body = '<p><strong>Required by eBay (Category ' + esc(data.category_id) + ')</strong></p>';
+    body += '<form method="post" action="/product/' + encodeURIComponent(sku) + '/item-specifics">';
+
+    for (const a of data.aspects) {
+      body += '<div class="aspect-row"><label><strong>' + esc(a.name) + '</strong></label>';
+      body += '<input type="hidden" name="aspect_name" value="' + esc(a.name) + '">';
+
+      if (a.allowed_values && a.allowed_values.length) {
+        body += '<select name="aspect_value" required>';
+        body += '<option value="">-- Select --</option>';
+        for (const v of a.allowed_values) {
+          const selected = v === a.value ? ' selected' : '';
+          body += '<option value="' + esc(v) + '"' + selected + '>' + esc(v) + '</option>';
+        }
+        body += '</select>';
+      } else {
+        body += '<input name="aspect_value" value="' + esc(a.value || '') + '" required>';
+      }
+
+      body += a.complete ? ' <span>✓</span>' : ' <span>Required</span>';
+      body += '</div>';
+    }
+
+    body += '<button type="submit">Save Required Specifics</button></form>';
+    box.innerHTML = body;
+  } catch (err) {
+    box.innerHTML = '<p class="warning">' + esc(err.message) + '</p>';
+  }
+}
+</script>
+
+</body>
+</html>

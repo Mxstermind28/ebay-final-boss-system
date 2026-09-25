@@ -1,0 +1,28 @@
+name: Daily eBay Research
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 13 * * *"
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run research
+        env:
+          EBAY_ENV: sandbox
+          EBAY_MARKETPLACE_ID: EBAY_US
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          SUPPLIER_COST_FACTOR: "0.55"
+          EBAY_FEE_RATE: "0.135"
+          MIN_PROFIT: "7"
+          MIN_MARGIN: "0.20"
+          DB_PATH: "data/app.db"
+        run: python run_pipeline.py "home gadgets"
