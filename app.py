@@ -6,12 +6,64 @@ from pipeline import run_research, publish_product, save_listing_fields, run_san
 from dotenv import load_dotenv
 import hashlib
 import os
+import secrets
+from datetime import timedelta
+from functools import wraps
+from urllib.parse import urlsplit
+from flask import session, abort
+from werkzeug.security import check_password_hash
 
 load_dotenv()
 init_db()
 
 app = Flask(__name__)
-app.secret_key = settings.FLASK_SECRET_KEY
+# Fail closed if secrets have not been configured in Railway.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=os.environ.get("RAILWAY_ENVIRONMENT") is not None,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+)
+
+PUBLIC_ENDPOINTS = {"login", "ebay_account_deletion", "health"}
+
+@app.before_request
+def require_dashboard_login():
+    if not app.secret_key or not os.environ.get("DASHBOARD_PASSWORD_HASH"):
+        return "Dashboard authentication is not configured.", 503
+    if request.endpoint in PUBLIC_ENDPOINTS:
+        return None
+    if not session.get("dashboard_authenticated"):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Authentication required"}), 401
+        return redirect(url_for("login"))
+    # Require same-origin browser requests for state-changing routes.
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        origin = request.headers.get("Origin", "")
+        if origin and urlsplit(origin).netloc != request.host:
+            abort(403)
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        origin = request.headers.get("Origin", "")
+        if origin and urlsplit(origin).netloc != request.host:
+            abort(403)
+        password = request.form.get("password", "")
+        if check_password_hash(os.environ["DASHBOARD_PASSWORD_HASH"], password):
+            session.clear()
+            session["dashboard_authenticated"] = True
+            session.permanent = True
+            return redirect(url_for("dashboard"))
+        flash("Incorrect password.", "error")
+    return render_template("login.html")
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 
 @app.get("/")
