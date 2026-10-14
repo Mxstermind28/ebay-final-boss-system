@@ -3,55 +3,96 @@ from pathlib import Path
 from config import settings
 
 
+import os
+
+
+def using_postgres():
+    return bool(os.getenv("DATABASE_URL", "").strip())
+
+
+class PostgresConnection:
+    """Small adapter preserving the existing sqlite-style db.py API."""
+
+    def __init__(self, url):
+        import psycopg
+        from psycopg.rows import dict_row
+        self._connection = psycopg.connect(url, row_factory=dict_row)
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._connection.__exit__(*args)
+
+    def execute(self, sql, params=None):
+        # All placeholders in this module are parameter markers, not literal '?'.
+        sql = sql.replace("?", "%s")
+        return self._connection.execute(sql, params)
+
+
 def conn():
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url:
+        return PostgresConnection(url)
     Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(settings.DB_PATH)
     c.row_factory = sqlite3.Row
     return c
 
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS products (
+    sku TEXT PRIMARY KEY,
+    query TEXT,
+    title TEXT NOT NULL,
+    source_url TEXT,
+    source_price REAL,
+    estimated_cost REAL,
+    sell_price REAL,
+    estimated_profit REAL,
+    score REAL,
+    image_url TEXT,
+    category_id TEXT,
+    brand TEXT,
+    item_type TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS product_aspects (
+    sku TEXT NOT NULL,
+    aspect_name TEXT NOT NULL,
+    aspect_value TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (sku, aspect_name)
+);
+CREATE TABLE IF NOT EXISTS listings (
+    sku TEXT PRIMARY KEY,
+    offer_id TEXT,
+    listing_id TEXT,
+    title TEXT,
+    price REAL,
+    status TEXT,
+    error TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
 def init_db():
     with conn() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS products (
-            sku TEXT PRIMARY KEY,
-            query TEXT,
-            title TEXT NOT NULL,
-            source_url TEXT,
-            source_price REAL,
-            estimated_cost REAL,
-            sell_price REAL,
-            estimated_profit REAL,
-            score REAL,
-            image_url TEXT,
-            category_id TEXT,
-            brand TEXT,
-            item_type TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS product_aspects (
-            sku TEXT NOT NULL,
-            aspect_name TEXT NOT NULL,
-            aspect_value TEXT NOT NULL,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (sku, aspect_name)
-        );
-        CREATE TABLE IF NOT EXISTS listings (
-            sku TEXT PRIMARY KEY,
-            offer_id TEXT,
-            listing_id TEXT,
-            title TEXT,
-            price REAL,
-            status TEXT,
-            error TEXT,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-        columns = {row[1] for row in c.execute("PRAGMA table_info(products)").fetchall()}
-        if "brand" not in columns:
-            c.execute("ALTER TABLE products ADD COLUMN brand TEXT")
-        if "item_type" not in columns:
-            c.execute("ALTER TABLE products ADD COLUMN item_type TEXT")
+        if using_postgres():
+            for statement in SCHEMA.split(";"):
+                if statement.strip():
+                    c.execute(statement)
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS brand TEXT")
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS item_type TEXT")
+        else:
+            c.executescript(SCHEMA)
+            columns = {row[1] for row in c.execute("PRAGMA table_info(products)").fetchall()}
+            if "brand" not in columns:
+                c.execute("ALTER TABLE products ADD COLUMN brand TEXT")
+            if "item_type" not in columns:
+                c.execute("ALTER TABLE products ADD COLUMN item_type TEXT")
 
 
 def upsert_product(p):

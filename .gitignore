@@ -6,3 +6,10 @@ logs/
 .venv/
 venv/
 .DS_Store
+
+# Local database credentials and backups
+pg_connection.cmd
+*.db
+data/
+db_sqlite_backup.py
+migrate_sqlite_to_postgres.py
