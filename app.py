@@ -26,7 +26,7 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
 )
 
-PUBLIC_ENDPOINTS = {"login", "ebay_account_deletion", "health"}
+PUBLIC_ENDPOINTS = {"login", "ebay_account_deletion", "health", "privacy"}
 
 @app.before_request
 def require_dashboard_login():
@@ -197,6 +197,11 @@ def ebay_account_deletion():
 
     # Do not log the payload: it can contain eBay user identifiers.
     return "", 204
+
+
+@app.get("/privacy")
+def privacy():
+    return render_template("privacy.html")
 
 
 @app.get("/api/health")
